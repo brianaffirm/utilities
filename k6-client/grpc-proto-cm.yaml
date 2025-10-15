@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grpc-proto
+  namespace: test-kotlin-dt
+data:
+  example.proto: |
+    syntax = "proto3";
+    package affirm.test.grpc.v1;
+
+    message GetExampleEndpointRequest { optional string ari = 1; }
+    message GetExampleEndpointResponse { optional string stuff = 1; }
+
+    message GetExampleEndpointWithErrorRequest { optional string ari = 1; }
+    message GetExampleEndpointWithErrorResponse { optional string response_text = 1; }
+
+    message GetExampleBlockingEndpointRequest { optional string ari = 1; }
+    message GetExampleBlockingEndpointResponse { optional string stuff = 1; }
+
+    message SimulateStatusRequest { optional int32 status_code = 1; }
+    message SimulateStatusResponse {}
+
+    service GrpcExampleService {
+      rpc GetExampleEndpoint(affirm.test.grpc.v1.GetExampleEndpointRequest) returns (affirm.test.grpc.v1.GetExampleEndpointResponse);
+      rpc GetExampleEndpointWithError(affirm.test.grpc.v1.GetExampleEndpointWithErrorRequest) returns (affirm.test.grpc.v1.GetExampleEndpointWithErrorResponse);
+      rpc GetExampleBlockingEndpoint(affirm.test.grpc.v1.GetExampleBlockingEndpointRequest) returns (affirm.test.grpc.v1.GetExampleBlockingEndpointResponse);
+      rpc SimulateStatus(affirm.test.grpc.v1.SimulateStatusRequest) returns (affirm.test.grpc.v1.SimulateStatusResponse);
+    }
+
