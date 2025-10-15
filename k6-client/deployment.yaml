@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k6-grpc-loadtest
+  namespace: test-kotlin-dt
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: k6-grpc-loadtest
+  template:
+    metadata:
+      labels:
+        app: k6-grpc-loadtest
+    spec:
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-script
+            defaultMode: 0444
+        - name: protos
+          configMap:
+            name: grpc-proto
+            defaultMode: 0444
+        - name: nail-var
+          secret:
+            secretName: your-tls-secret
+            items:
+              - key: tls.crt
+                path: boba-pki-cert.pem
+              - key: tls.key
+                path: boba-pki-key.pem
+      containers:
+        - name: k6
+          image: grafana/k6:0.49.0
+          command: ["sh","-c"]
+          args: ["k6 run /scripts/test-grpc.js"]
+          env:
+            - name: RPC_TARGET
+              value: "test-kotlin-dt-grpc.stage.aff:443"
+            - name: RPC_METHOD
+              value: "affirm.test.grpc.v1.GrpcExampleService/GetExampleEndpoint"
+            - name: RPC_HOST_HEADER
+              value: "test-kotlin-dt-grpc.stage.aff"
+            - name: TLS_INSECURE
+              value: "false"
+            - name: TLS_SERVER_NAME
+              value: "test-kotlin-dt-grpc.stage.aff"
+            - name: TLS_CERT_PATH
+              value: "/nail/var/boba-pki-cert.pem"
+            - name: TLS_KEY_PATH
+              value: "/nail/var/boba-pki-key.pem"
+            - name: K6_VUS
+              value: "50"
+            - name: K6_DURATION
+              value: "10m"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: protos
+              mountPath: /
+              readOnly: true
+            - name: nailvar
+              mountPath: /nail/var
+              readOnly: true
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+        - name: grpcurl
+          image: debian:stable-slim
+          command: ["bash","-lc"]
+          args:
+            - |
+              set -euo pipefail
+              apt-get update -y && apt-get install -y curl ca-certificates tar && \
+              ARCH="$(dpkg --print-architecture)" && \
+              case "$ARCH" in
+                amd64) FILE="grpcurl_1.8.6_linux_x86_64.tar.gz" ;;
+                arm64) FILE="grpcurl_1.8.6_linux_arm64.tar.gz" ;;
+                *) echo "Unsupported arch: $ARCH" && sleep infinity ;;
+              esac && \
+              curl -sSL "https://github.com/fullstorydev/grpcurl/releases/download/v1.8.6/${FILE}" \
+                | tar -xz -C /usr/local/bin && \
+              echo "grpcurl installed:" && grpcurl -version && \
+              sleep infinity
+          volumeMounts:
+            - name: protos
+              mountPath: /work
+              readOnly: true
+            - name: nail-var
+              mountPath: /nail/var
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+
