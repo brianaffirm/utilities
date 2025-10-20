@@ -1,0 +1,16 @@
+FROM debian:stable-slim
+ARG GRPCURL_VERSION=1.8.6
+RUN set -eux; \
+    apt-get update -y && apt-get install -y --no-install-recommends curl ca-certificates tar && rm -rf /var/lib/apt/lists/*; \
+    ARCH="$(dpkg --print-architecture)"; \
+    case "$ARCH" in \
+      amd64)  FILE="grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz" ;; \
+      arm64)  FILE="grpcurl_${GRPCURL_VERSION}_linux_arm64.tar.gz" ;; \
+      *) echo "Unsupported arch: $ARCH" && exit 1 ;; \
+    esac; \
+    curl -sSL "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/${FILE}" \
+      | tar -xz -C /usr/local/bin grpcurl; \
+    chmod +x /usr/local/bin/grpcurl
+# keep behavior same as your current sidecar
+CMD ["bash","-lc","echo \"grpcurl installed:\" && grpcurl -version && sleep infinity"]
+

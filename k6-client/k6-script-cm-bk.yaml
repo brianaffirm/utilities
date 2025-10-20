@@ -1,0 +1,113 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k6-script
+  namespace: test-kotlin-dt
+data:
+  test-grpc.js: |
+    import grpc from 'k6/net/grpc';
+    import { check, sleep } from 'k6';
+
+    const TARGET            = __ENV.RPC_TARGET        || 'test-kotlin-dt-grpc.stage.aff:443';
+    const METHOD            = __ENV.RPC_METHOD        || 'affirm.test.grpc.v1.GrpcExampleService/GetExampleEndpoint';
+    const HOST_HEADER       = __ENV.RPC_HOST_HEADER   || 'test-kotlin-dt-grpc.stage.aff';
+    const INSECURE          = (__ENV.TLS_INSECURE || 'false').toLowerCase() === 'true';
+    const SERVER_NAME       = __ENV.TLS_SERVER_NAME   || HOST_HEADER;
+
+    const PROTO_DIR         = __ENV.PROTO_DIR         || '/protos';
+    const CERT_PATH         = __ENV.TLS_CERT_PATH     || '/nail/var/boba-pki-cert.pem';
+    const KEY_PATH          = __ENV.TLS_KEY_PATH      || '/nail/var/boba-pki-key.pem';
+    const CA_PATH           = __ENV.TLS_CA_PATH       || ''; // e.g. /nail/var/affirm-ca-bundle.pem
+
+    const CONNECT_TIMEOUT   = __ENV.CONNECT_TIMEOUT   || '5s';
+    const RPC_TIMEOUT       = __ENV.RPC_TIMEOUT       || '3s';
+    const SLEEP_S           = Number(__ENV.K6_SLEEP || 0.1);
+
+    export const options = {
+      scenarios: {
+    car: {
+      executor: 'constant-arrival-rate',
+      rate: Number(__ENV.K6_RATE || 1000),   // iterations per second (global)
+      timeUnit: '1s',
+      duration: __ENV.K6_HOLD || '1h',
+      preAllocatedVUs: Number(__ENV.K6_PRE_VUS || 200),
+      maxVUs: Number(__ENV.K6_MAX_VUS || 2000),
+      },
+    },
+    thresholds: { grpc_req_duration: ['p(95)<500'], checks: ['rate>0.99'] },
+    };
+
+    // ---------- INIT (open() + load() allowed) ----------
+    const CERT_PEM = open(CERT_PATH);
+    const KEY_PEM  = open(KEY_PATH);
+    const CA_PEM   = (CA_PATH && !INSECURE) ? open(CA_PATH) : null;
+
+    const client = new grpc.Client();
+    console.log(`[init] Loading protos from ${PROTO_DIR}`);
+    client.load([PROTO_DIR], 'example.proto');
+
+    console.log(`[init] CA_PATH=${CA_PATH || '(none)'} CA_SET=${CA_PEM ? 'true' : 'false'} CERT_LEN=${(CERT_PEM||'').length} CA_LEN=${(CA_PEM||'').length || 0}`);
+
+    export function setup() {
+      console.log(`[setup] Target=${TARGET} TLS_INSECURE=${INSECURE} SNI=${SERVER_NAME} CA_SET=${CA_PEM ? 'true' : 'false'}`);
+      return {
+        target: TARGET,
+        method: METHOD,
+        hostHeader: HOST_HEADER,
+        insecure: INSECURE,
+        serverName: SERVER_NAME,
+        caSet: !!CA_PEM,
+      };
+    }
+
+    // ---------- Each VU iteration ----------
+    export default function (cfg) {
+      // Build TLS options (no object spread)
+      const tls = {
+        cert: CERT_PEM,
+        key: KEY_PEM,
+        servername: cfg.serverName,
+      };
+      if (cfg.insecure) {
+        tls.insecureSkipTLSVerify = true; // like grpcurl -insecure (still sends client cert)
+      } else if (CA_PEM) {
+        // IMPORTANT: k6 expects `cacerts` (string or array), not `caCert`
+        tls.cacerts = CA_PEM; // or: [CA_PEM]
+      }
+
+      try {
+        console.log(`[VU] Connecting to ${cfg.target} (timeout=${CONNECT_TIMEOUT}, insecure=${cfg.insecure}, caSet=${cfg.caSet}) ...`);
+        client.connect(cfg.target, { plaintext: false, tls, timeout: CONNECT_TIMEOUT });
+        console.log(`[VU] Connected`);
+      } catch (e) {
+        console.error(`[VU] CONNECT ERROR: ${e && e.message ? e.message : e}`);
+        sleep(SLEEP_S);
+        return;
+      }
+
+      try {
+        const req = { ari: __ENV.ARI || '' };
+        const metadata = { Host: cfg.hostHeader, 'content-type': 'application/grpc' };
+
+        const t0 = Date.now();
+        console.log(`[VU] → Invoke ${cfg.method} (timeout=${RPC_TIMEOUT})`);
+        const res = client.invoke(cfg.method, req, { metadata, timeout: RPC_TIMEOUT });
+        const dt = Date.now() - t0;
+
+        const status = res ? res.status : 'no-res';
+        const payload = res && res.message ? JSON.stringify(res.message).slice(0, 300) : '';
+        console.log(`[VU] ← Status=${status} in ${dt}ms payload=${payload}`);
+
+        check(res, { 'status OK': (r) => r && r.status === grpc.StatusOK });
+      } catch (e) {
+        console.error(`[VU] RPC ERROR: ${e && e.message ? e.message : e}`);
+      } finally {
+        try { client.close(); console.log('[VU] Closed channel'); } catch (_) {}
+      }
+
+      sleep(SLEEP_S);
+    }
+
+    export function teardown() {
+      console.log('[teardown] Done.');
+    }
