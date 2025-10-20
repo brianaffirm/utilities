@@ -1,7 +1,7 @@
 # Mini Load Test for test-kotlin-dt for grpc endpoint
 
 
-1. scc -r us-east-1 -c stage-live-main
+1. `scc -r us-east-1 -c stage-live-main`
 ```bash
 test-kotlin-dt-rpc-6cdb77654c-5xcq7                            3/3     Running            0              2d22h
 test-kotlin-dt-rpc-6cdb77654c-wtx2m                            3/3     Running            0              4d11h
