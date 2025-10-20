@@ -2,12 +2,12 @@
 
 
 1. `scc -r us-east-1 -c stage-live-main`
+2. ssh into a `test-kotlin-dt` pod, choose one that is not grpc
+3. `kubectl get pods -n test-kotlin-dt | grep test-kotlin-dt-rpc`
 ```bash
 test-kotlin-dt-rpc-6cdb77654c-5xcq7                            3/3     Running            0              2d22h
 test-kotlin-dt-rpc-6cdb77654c-wtx2m                            3/3     Running            0              4d11h
 ```
-2. ssh into a `test-kotlin-dt` pod, choose one that is not grpc
-3. `kubectl get pods -n test-kotlin-dt | grep test-kotlin-dt-rpc`
 4. `kubectl -n test-kotlin-dt exec -it test-kotlin-dt-rpc-6cdb77654c-wtx2m -c app -- bash`
 5. `apt install vim`
 6. `vim example.proto`
