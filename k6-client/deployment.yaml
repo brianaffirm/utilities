@@ -15,11 +15,9 @@ spec:
       annotations:
         bobapki.affirm.com/inject: "true"
         bobapki.affirm.com/vault-role: "test-kotlin-dt"
-        # Tell BobaPKI where to write certs/keys:
-        bobapki.affirm.com/target-volume: "nail"
-        # (Optional) If your setup supports it, you can also specify a subdir:
-        # bobapki.affirm.com/target-dir: "/nail/var"
+        bobapki.affirm.com/volume: "nailvar"
     spec:
+      serviceAccountName: test-kotlin-dt-public
       volumes:
         - name: scripts
           configMap:
@@ -29,12 +27,20 @@ spec:
           configMap:
             name: grpc-proto
             defaultMode: 0444
-        # Writable volume for injected certs/keys
-        - name: nail
+        - name: ca-bundle
+          configMap:
+            name: k6-affirm-ca-bundle
+            items:
+              - key: affirm-ca-bundle.pem
+                path: affirm-ca-bundle.pem
+        - name: nailvar
           emptyDir: {}
       containers:
         - name: k6
-          image: grafana/k6:0.49.0
+          image: 448435121187.dkr.ecr.us-east-1.amazonaws.com/test-kotlin-dt/k6:0.49.0-mp
+          imagePullPolicy: Always
+          securityContext:
+            readOnlyRootFilesystem: false
           command: ["sh","-c"]
           args: ["k6 run /scripts/test-grpc.js"]
           env:
@@ -46,6 +52,8 @@ spec:
               value: "test-kotlin-dt-grpc.stage.aff"
             - name: TLS_INSECURE
               value: "false"
+            - name: TLS_CA_PATH
+              value: "/nail/var/affirm-ca-bundle.pem"
             - name: TLS_SERVER_NAME
               value: "test-kotlin-dt-grpc.stage.aff"
             - name: TLS_CERT_PATH
@@ -53,50 +61,66 @@ spec:
             - name: TLS_KEY_PATH
               value: "/nail/var/boba-pki-key.pem"
             - name: K6_VUS
+              value: "400"
+            - name: K6_START_VUS
               value: "50"
+            - name: K6_RAMP
+              value: "1m"
+            - name: K6_HOLD
+              value: "55m"
             - name: K6_DURATION
-              value: "10m"
+              value: "1h"
+            - name: K6_RATE
+              value: "2000"
+            - name: K6_PRE_VUS
+              value: "400"
+            - name: K6_MAX_VUS
+              value: "4000"
+            - name: PROTO_DIR
+              value: "/protos"
           volumeMounts:
             - name: scripts
               mountPath: /scripts
               readOnly: true
             - name: protos
-              mountPath: /
+              mountPath: /protos
               readOnly: true
-            - name: nail
-              mountPath: /nail
+            - name: protos
+              mountPath: /example.proto
+              subPath: example.proto
+              readOnly: true
+            - name: ca-bundle
+              mountPath: /nail/var/affirm-ca-bundle.pem   # <-- mount the configmap file
+              subPath: affirm-ca-bundle.pem
+              readOnly: true
+            - name: nailvar
+              mountPath: /nail/var
+              readOnly: false
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              memory: "2Gi"
+        - name: grpcurl
+          image: 448435121187.dkr.ecr.us-east-1.amazonaws.com/test-kotlin-dt/grpcurl:1.8.6-amd64
+          command: ["sleep"]
+          args: ["infinity"]
+          volumeMounts:
+            - name: protos
+              mountPath: /protos
+              readOnly: true
+            - name: nailvar
+              mountPath: /nail/var
+              readOnly: false
+            # optional: also mount the bundle for manual checks
+            - name: ca-bundle
+              mountPath: /nail/var/affirm-ca-bundle.pem
+              subPath: affirm-ca-bundle.pem
+              readOnly: true
           resources:
             requests:
               cpu: "250m"
               memory: "256Mi"
             limits:
-              cpu: "1"
-              memory: "1Gi"
-        - name: grpcurl
-          image: debian:stable-slim
-          command: ["bash","-lc"]
-          args:
-            - |
-              set -euo pipefail
-              apt-get update -y && apt-get install -y curl ca-certificates tar && \
-              ARCH="$(dpkg --print-architecture)" && \
-              case "$ARCH" in
-                amd64) FILE="grpcurl_1.8.6_linux_x86_64.tar.gz" ;;
-                arm64) FILE="grpcurl_1.8.6_linux_arm64.tar.gz" ;;
-                *) echo "Unsupported arch: $ARCH" && sleep infinity ;;
-              esac && \
-              curl -sSL "https://github.com/fullstorydev/grpcurl/releases/download/v1.8.6/${FILE}" \
-                | tar -xz -C /usr/local/bin && \
-              echo "grpcurl installed:" && grpcurl -version && \
-              sleep infinity
-          volumeMounts:
-            - name: protos
-              mountPath: /work
-              readOnly: true
-          resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
-            limits:
-              cpu: "250m"
               memory: "256Mi"

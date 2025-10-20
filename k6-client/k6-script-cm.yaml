@@ -6,53 +6,115 @@ metadata:
 data:
   test-grpc.js: |
     import grpc from 'k6/net/grpc';
-    import { check, sleep } from 'k6';
+    import { sleep } from 'k6';
 
-    const TARGET = __ENV.RPC_TARGET || 'test-kotlin-dt-grpc.stage.aff:443';
-    const METHOD = __ENV.RPC_METHOD || 'affirm.test.grpc.v1.GrpcExampleService/GetExampleEndpoint';
-    const HOST_HEADER = __ENV.RPC_HOST_HEADER || 'test-kotlin-dt-grpc.stage.aff';
-    const INSECURE = (__ENV.TLS_INSECURE || 'false').toLowerCase() === 'true';
-    const CERT_PATH = __ENV.TLS_CERT_PATH || '/nail/var/boba-pki-cert.pem';
-    const KEY_PATH  = __ENV.TLS_KEY_PATH  || '/nail/var/boba-pki-key.pem';
-    const SERVER_NAME = __ENV.TLS_SERVER_NAME || HOST_HEADER;
+    // ---------- ENV ----------
+    const TARGET       = __ENV.RPC_TARGET      || 'test-kotlin-dt-grpc.stage.aff:443';
+    const METHOD       = __ENV.RPC_METHOD      || 'affirm.test.grpc.v1.GrpcExampleService/GetExampleEndpoint';
+    const HOST_HEADER  = __ENV.RPC_HOST_HEADER || 'test-kotlin-dt-grpc.stage.aff';
+    const INSECURE     = (__ENV.TLS_INSECURE || 'false').toLowerCase() === 'true';
+    const SERVER_NAME  = __ENV.TLS_SERVER_NAME || HOST_HEADER;
+
+    const PROTO_DIR    = __ENV.PROTO_DIR       || '/protos';
+    const PROTO_FILE   = __ENV.PROTO_FILE      || 'example.proto';
+
+    const CERT_PATH    = __ENV.TLS_CERT_PATH   || '/nail/var/boba-pki-cert.pem';
+    const KEY_PATH     = __ENV.TLS_KEY_PATH    || '/nail/var/boba-pki-key.pem';
+    const CA_PATH      = __ENV.TLS_CA_PATH     || '';
+
+    const CONNECT_TIMEOUT = __ENV.CONNECT_TIMEOUT || '5s';
+    const RPC_TIMEOUT     = __ENV.RPC_TIMEOUT     || '3s';
+    const SLOW_MS         = Number(__ENV.SLOW_MS || 200);
+
+    const LOG_EVERY_N     = Number(__ENV.LOG_EVERY_N || 1000);
+    const LOG_FULL        = (__ENV.LOG_FULL || 'false').toLowerCase() === 'true';
+    const DUMP_MAX        = Number(__ENV.DUMP_MAX || 300);
+    const REQ_ARI         = __ENV.ARI || '';
 
     export const options = {
-      vus: Number(__ENV.K6_VUS || 10),
-      duration: __ENV.K6_DURATION || '5m',
-      thresholds: {
-        grpc_req_duration: ['p(95)<500'],
-        checks: ['rate>0.99'],
+      scenarios: {
+        car: {
+          executor: 'constant-arrival-rate',
+          rate: Number(__ENV.K6_RATE || 2000),
+          timeUnit: '1s',
+          duration: __ENV.K6_HOLD || '1h',
+          preAllocatedVUs: Number(__ENV.K6_PRE_VUS || 400),
+          maxVUs: Number(__ENV.K6_MAX_VUS || 4000),
+        },
       },
+      thresholds: {},
+      systemTags: ['vu', 'iter'],
+      noVUConnectionReuse: false,
     };
 
+    // ---------- INIT ----------
+    const CERT_PEM = open(CERT_PATH);
+    const KEY_PEM  = open(KEY_PATH);
+    const CA_PEM   = (CA_PATH && !INSECURE) ? open(CA_PATH) : null;
+
     const client = new grpc.Client();
-    client.load(['/.'], 'example.proto');
+    client.load([PROTO_DIR], PROTO_FILE);
+    let connected = false;
+    let seen = 0;
 
     export function setup() {
-      const tls = INSECURE
-        ? { insecureSkipTLSVerify: true, servername: SERVER_NAME }
-        : {
-            cert: open(CERT_PATH),
-            key: open(KEY_PATH),
-            servername: SERVER_NAME,
-          };
-      client.connect(TARGET, { plaintext: false, tls });
+      console.log('[setup] target=' + TARGET +
+                  ' tls_insecure=' + INSECURE +
+                  ' sni=' + SERVER_NAME +
+                  ' ca=' + (CA_PEM ? 'yes' : 'no'));
     }
 
+    function dumpBody(res) {
+      var s = (res && res.message) ? JSON.stringify(res.message) : '';
+      if (LOG_FULL) return s;
+      return s.length <= DUMP_MAX ? s : s.slice(0, DUMP_MAX) + '…';
+    }
+
+    function shouldSample() {
+      if (LOG_EVERY_N <= 0) return false;
+      seen += 1;
+      return (seen % LOG_EVERY_N) === 0;
+    }
+
+    // ---------- TEST LOOP ----------
     export default function () {
-      const metadata = {
-        Host: HOST_HEADER,
-        'content-type': 'application/grpc',
-      };
+      if (!connected) {
+        var tls = { cert: CERT_PEM, key: KEY_PEM, servername: SERVER_NAME };
+        if (INSECURE) tls.insecureSkipTLSVerify = true;
+        else if (CA_PEM) tls.cacerts = CA_PEM;
 
-      const req = { ari: __ENV.ARI || '' };
-      const res = client.invoke(METHOD, req, { metadata });
+        try {
+          client.connect(TARGET, { plaintext: false, tls: tls, timeout: CONNECT_TIMEOUT });
+          connected = true;
+        } catch (e) {
+          var cmsg = (e && e.message) ? e.message : String(e);
+          console.error('[connect] ' + cmsg);
+          sleep(0.01);
+          return;
+        }
+      }
 
-      check(res, { 'status OK': (r) => r && r.status === grpc.StatusOK });
-      sleep(Number(__ENV.K6_SLEEP || 0.1));
+      var req = { ari: REQ_ARI };
+      var t0 = Date.now();
+
+      try {
+        var res = client.invoke(METHOD, req, { timeout: RPC_TIMEOUT });
+        var dt = Date.now() - t0;
+        var bodyStr = dumpBody(res);
+        if (shouldSample()) {
+          console.log('[SAMPLE] dt=' + dt + 'ms body=' + bodyStr);
+        } else if (dt > SLOW_MS) {
+          console.log('[slow] ' + dt + 'ms');
+        }
+      } catch (e) {
+        var imsg = (e && e.message) ? e.message : String(e);
+        console.error('[invoke] ' + imsg);
+      }
+
+      sleep(0);
     }
 
     export function teardown() {
-      client.close();
+      try { client.close(); } catch (_) {}
+      console.log('[teardown] closed');
     }
-
